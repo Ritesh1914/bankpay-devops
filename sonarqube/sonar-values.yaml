@@ -1,0 +1,85 @@
+community:
+  enabled: true
+
+monitoringPasscode: "bankpay-monitoring-2026"
+
+image:
+  repository: sonarqube
+  tag: "community"
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  externalPort: 9000
+  internalPort: 9000
+  nodePort: 30001
+
+postgresql:
+  enabled: false
+
+jdbcOverwrite:
+  enable: true
+  jdbcUrl: "jdbc:postgresql://sonarqube-db-postgresql.sonarqube.svc.cluster.local:5432/sonarqube"
+  jdbcUsername: "sonarqube"
+  jdbcPassword: "sonarqube123"
+
+resources:
+  requests:
+    cpu: "300m"
+    memory: "1Gi"
+  limits:
+    cpu: "800m"
+    memory: "2Gi"
+
+persistence:
+  enabled: true
+  size: 5Gi
+
+sonarProperties:
+  sonar.web.javaOpts: "-Xmx512m -Xms128m"
+  sonar.ce.javaOpts: "-Xmx512m -Xms128m"
+  sonar.search.javaOpts: "-Xmx512m -Xms512m"
+
+ingress:
+  enabled: false
+
+initSysctl:
+  enabled: true
+  vmMaxMapCount: 262144
+  fsFileMax: 65536
+  nofile: 65536
+  nproc: 4096
+  securityContext:
+    privileged: true
+
+initFs:
+  enabled: true
+  securityContext:
+    privileged: true
+
+securityContext:
+  fsGroup: 0
+
+containerSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 0
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop:
+      - ALL
+
+startupProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 24
+
+livenessProbe:
+  initialDelaySeconds: 60
+  periodSeconds: 30
+
+readinessProbe:
+  initialDelaySeconds: 60
+  periodSeconds: 30

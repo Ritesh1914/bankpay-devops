@@ -1,0 +1,51 @@
+controller:
+  image:
+    repository: "bankpay-jenkins"
+    tag: "1.0.0"
+    pullPolicy: Never
+    tagLabel: ""
+
+  admin:
+    username: admin
+    password: Admin@123
+
+  installPlugins: []
+  initializeOnce: true
+  numExecutors: 2
+  serviceType: NodePort
+  nodePort: 30000
+
+  javaOpts: "-Xmx1024m -Xms512m -XX:+UseG1GC -Djenkins.install.runSetupWizard=false"
+
+  prometheus:
+    enabled: false
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "768Mi"
+    limits:
+      cpu: "1500m"
+      memory: "2Gi"
+
+persistence:
+  enabled: true
+  size: 5Gi
+
+agent:
+  enabled: true
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+rbac:
+  create: true
+  readSecrets: true
+
+serviceAccount:
+  create: true
+  name: jenkins
