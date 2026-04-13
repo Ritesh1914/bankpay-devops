@@ -8,7 +8,7 @@ pipeline {
         DOCKERHUB_USER  = "riteshsingh90"
         IMAGE_NAME      = "${DOCKERHUB_USER}/${APP_NAME}"
         IMAGE_TAG       = "${BUILD_NUMBER}"
-        SONAR_URL       = "http://host.docker.internal:30001"
+        SONAR_URL       = "http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000"
         HELM_CHART      = "helm/bankpay"
         GIT_REPO        = "https://github.com/Ritesh1914/bankpay-devops.git"
     }
