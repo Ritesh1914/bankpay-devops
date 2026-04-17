@@ -104,7 +104,7 @@ passwordVariable: 'DOCKER_PASS'
 )]) {
 
 
-  sh 
+  sh '''
   echo "Creating docker config..."
 
   mkdir -p /tmp/.docker
@@ -155,7 +155,7 @@ passwordVariable: 'DOCKER_PASS'
   kubectl logs -f kaniko-build-${BUILD_NUMBER} -n jenkins || true
 
   kubectl delete pod kaniko-build-${BUILD_NUMBER} -n jenkins || true
-  
+  '''
 }
 
 
