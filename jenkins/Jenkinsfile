@@ -33,7 +33,7 @@ timestamps()
 
 stages {
 
-```
+
 stage('Checkout') {
   steps {
     checkout scm
@@ -109,7 +109,7 @@ stage('Build & Push Image (Kaniko)') {
         mkdir -p /kaniko/.docker
 
         cat > /kaniko/.docker/config.json <<EOF
-```
+
 
 {
 "auths": {
