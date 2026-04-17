@@ -104,62 +104,66 @@ passwordVariable: 'DOCKER_PASS'
 )]) {
 
 
-  sh '''
-  echo "Creating docker config..."
+        sh '''
+        echo "Creating Docker auth..."
 
-  mkdir -p /tmp/.docker
-  echo "{\"auths\":{\"https://index.docker.io/v1/\":{\"username\":\"$DOCKER_USER\",\"password\":\"$DOCKER_PASS\"}}}" > /tmp/.docker/config.json
+        mkdir -p /tmp/.docker
 
-  echo "Running Kaniko pod..."
+        echo "{\\"auths\\":{\\"https://index.docker.io/v1/\\":{\\"username\\":\\"$DOCKER_USER\\",\\"password\\":\\"$DOCKER_PASS\\"}}}" > /tmp/.docker/config.json
 
-  kubectl run kaniko-build-${BUILD_NUMBER} \
-    --image=gcr.io/kaniko-project/executor:latest \
-    --restart=Never \
-    --namespace=jenkins \
-    --overrides='
+        echo "Starting Kaniko build..."
 
+        kubectl run kaniko-${BUILD_NUMBER} \
+          --image=gcr.io/kaniko-project/executor:latest \
+          --restart=Never \
+          --namespace=jenkins \
+          --overrides='{
+            "apiVersion": "v1",
+            "spec": {
+              "containers": [{
+                "name": "kaniko",
+                "image": "gcr.io/kaniko-project/executor:latest",
+                "args": [
+                  "--dockerfile=Dockerfile",
+                  "--context=git://github.com/Ritesh1914/bankpay-devops.git#refs/heads/main#app",
+                  "--destination='"$DOCKER_USER"'/bankpay-service:'"${BUILD_NUMBER}"'",
+                  "--destination='"$DOCKER_USER"'/bankpay-service:latest"
+                ],
+                "volumeMounts": [{
+                  "name": "docker-config",
+                  "mountPath": "/kaniko/.docker"
+                }]
+              }],
+              "volumes": [{
+                "name": "docker-config",
+                "hostPath": {
+                  "path": "/tmp/.docker"
+                }
+              }]
+            }
+          }'
 
-{
-"spec": {
-"containers": [
-{
-"name": "kaniko",
-"image": "gcr.io/kaniko-project/executor:latest",
-"args": [
-"--dockerfile=Dockerfile",
-"--context=git://github.com/Ritesh1914/bankpay-devops.git#refs/heads/main#app",
-"--destination='${DOCKER_USER}'/bankpay-service:'${BUILD_NUMBER}'",
-"--destination='${DOCKER_USER}'/bankpay-service:latest"
-],
-"volumeMounts": [
-{
-"name": "docker-config",
-"mountPath": "/kaniko/.docker"
+        echo "Waiting for Kaniko to finish..."
+
+        kubectl wait --for=condition=Ready pod/kaniko-${BUILD_NUMBER} -n jenkins --timeout=120s || true
+
+        kubectl logs -f kaniko-${BUILD_NUMBER} -n jenkins
+
+        STATUS=$(kubectl get pod kaniko-${BUILD_NUMBER} -n jenkins -o jsonpath='{.status.phase}')
+
+        echo "Kaniko status: $STATUS"
+
+        if [ "$STATUS" != "Succeeded" ]; then
+          echo "Kaniko build failed"
+          exit 1
+        fi
+
+        kubectl delete pod kaniko-${BUILD_NUMBER} -n jenkins
+        '''
+    }
 }
-]
-}
-],
-"volumes": [
-{
-"name": "docker-config",
-"hostPath": {
-"path": "/tmp/.docker"
-}
-}
-]
-}
-}
-' || true
 
 
-  kubectl logs -f kaniko-build-${BUILD_NUMBER} -n jenkins || true
-
-  kubectl delete pod kaniko-build-${BUILD_NUMBER} -n jenkins || true
-  '''
-}
-
-
-}
 }
 
 
