@@ -121,22 +121,36 @@ passwordVariable: 'DOCKER_PASS'
                 "image": "gcr.io/kaniko-project/executor:latest",
                 "args": [
                   "--dockerfile=app/Dockerfile",
-                  "--context=https://github.com/Ritesh1914/bankpay-devops.git#main#app",
+                  "--context=/workspace/app",
                   "--destination='"$DOCKER_USER"'/bankpay-service:'"${BUILD_NUMBER}"'",
                   "--destination='"$DOCKER_USER"'/bankpay-service:latest"
                 ],
-                "volumeMounts": [{
-                  "name": "docker-config",
-                  "mountPath": "/kaniko/.docker/config.json",
-                  "subPath": ".dockerconfigjson"
-              }]
+                "volumeMounts": [
+  {
+    "name": "docker-config",
+    "mountPath": "/kaniko/.docker/config.json",
+    "subPath": ".dockerconfigjson"
+  },
+  {
+    "name": "workspace",
+    "mountPath": "/workspace"
+  }
+]
               }],
-              "volumes": [{
-                "name": "docker-config",
-                "secret": {
-                  "secretName": "dockerhub-secret"
+              "volumes": [
+                {
+                  "name": "docker-config",
+                  "secret": {
+                    "secretName": "dockerhub-secret"
+                 }
+                },
+                {
+                  "name": "workspace",
+                  "hostPath": {
+                    "path": "/var/jenkins_home/workspace/${JOB_NAME}"
                 }
-              }]
+             }
+            ]
             }
           }'
 
