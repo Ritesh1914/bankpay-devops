@@ -26,7 +26,7 @@ HELM_CHART     = "helm/bankpay"
 
 stages {
 
-```
+
 stage('Checkout') {
   steps {
     checkout scm
@@ -111,7 +111,7 @@ stage('Deploy') {
     """
   }
 }
-```
+
 
 }
 
