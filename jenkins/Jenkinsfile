@@ -1,3 +1,4 @@
+cat > ~/bankpay-devops/jenkins/Jenkinsfile << 'EOF'
 pipeline {
     agent any
 
@@ -13,7 +14,7 @@ pipeline {
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
         timestamps()
     }
 
@@ -101,44 +102,23 @@ pipeline {
         stage('🐳 Build & Push (Kaniko)') {
             steps {
                 script {
-                    // Cleanup any previous failed kaniko pod
+                    // Cleanup any previous kaniko pod
                     sh """
-                        kubectl delete pod kaniko-${BUILD_NUMBER} \
+                        kubectl delete pod kaniko-build-${BUILD_NUMBER} \
                         -n ${K8S_NAMESPACE} \
                         --ignore-not-found=true 2>/dev/null || true
+                        sleep 2
                     """
 
-                    // Create Docker config secret inline
-                    withCredentials([usernamePassword(
-                        credentialsId: 'dockerhub-creds',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        // Create auth string
-                        sh """
-                            AUTH=\$(echo -n "\${DOCKER_USER}:\${DOCKER_PASS}" | base64 -w 0)
-
-                            kubectl create secret generic \
-                            kaniko-dockerhub-${BUILD_NUMBER} \
-                            --from-literal=config.json='{
-                              "auths": {
-                                "https://index.docker.io/v1/": {
-                                  "auth": "'\${AUTH}'"
-                                }
-                              }
-                            }' \
-                            -n ${K8S_NAMESPACE} \
-                            --dry-run=client -o yaml | \
-                            kubectl apply -f -
-                        """
-                    }
-
-                    // Create Kaniko pod with fix flags
-                    def kanikoPod = """
+                    // Write Kaniko pod manifest
+                    // Uses your existing dockerhub-secret
+                    // with .dockerconfigjson key
+                    writeFile file: "kaniko-${BUILD_NUMBER}.yaml",
+                    text: """
 apiVersion: v1
 kind: Pod
 metadata:
-  name: kaniko-${BUILD_NUMBER}
+  name: kaniko-build-${BUILD_NUMBER}
   namespace: ${K8S_NAMESPACE}
 spec:
   restartPolicy: Never
@@ -153,84 +133,89 @@ spec:
         - "--destination=${IMAGE_NAME}:latest"
         - "--snapshotMode=redo"
         - "--ignore-var-run=true"
-        - "--compressed-caching=false"
         - "--cache=false"
+        - "--compressed-caching=false"
+        - "--log-format=text"
+        - "--verbosity=info"
       volumeMounts:
         - name: docker-config
           mountPath: /kaniko/.docker
   volumes:
     - name: docker-config
-      secret:
-        secretName: kaniko-dockerhub-${BUILD_NUMBER}
+      projected:
+        sources:
+          - secret:
+              name: dockerhub-secret
+              items:
+                - key: .dockerconfigjson
+                  path: config.json
 """
-                    writeFile file: "kaniko-pod-${BUILD_NUMBER}.yaml",
-                              text: kanikoPod
 
-                    sh "kubectl apply -f kaniko-pod-${BUILD_NUMBER}.yaml"
+                    // Apply the pod
+                    sh "kubectl apply -f kaniko-${BUILD_NUMBER}.yaml"
+                    echo "🚀 Kaniko pod started!"
 
-                    echo "⏳ Waiting for Kaniko pod to be ready..."
+                    // Wait for pod to initialize
+                    sh "sleep 10"
+
+                    // Stream logs in real time
+                    echo "📋 Kaniko build logs:"
                     sh """
-                        sleep 5
-                        kubectl wait pod/kaniko-${BUILD_NUMBER} \
-                        --for=condition=Ready \
-                        --timeout=60s \
-                        -n ${K8S_NAMESPACE} 2>/dev/null || true
-                    """
-
-                    echo "📋 Streaming Kaniko logs..."
-                    sh """
-                        kubectl logs -f kaniko-${BUILD_NUMBER} \
+                        kubectl logs -f kaniko-build-${BUILD_NUMBER} \
                         -n ${K8S_NAMESPACE} || true
                     """
 
-                    // Wait for completion
-                    sh """
-                        for i in \$(seq 1 30); do
-                            STATUS=\$(kubectl get pod kaniko-${BUILD_NUMBER} \
-                            -n ${K8S_NAMESPACE} \
-                            -o jsonpath='{.status.phase}' 2>/dev/null)
-                            echo "Status: \$STATUS"
-                            if [ "\$STATUS" = "Succeeded" ]; then
-                                echo "✅ Kaniko build succeeded!"
-                                break
-                            elif [ "\$STATUS" = "Failed" ]; then
-                                echo "❌ Kaniko build failed!"
-                                kubectl logs kaniko-${BUILD_NUMBER} \
-                                -n ${K8S_NAMESPACE} || true
-                                exit 1
-                            fi
-                            sleep 10
-                        done
-                    """
+                    // Poll for final status
+                    echo "⏳ Checking final status..."
+                    def finalStatus = ""
+                    for (int i = 0; i < 30; i++) {
+                        finalStatus = sh(
+                            script: """
+                                kubectl get pod \
+                                kaniko-build-${BUILD_NUMBER} \
+                                -n ${K8S_NAMESPACE} \
+                                -o jsonpath='{.status.phase}' \
+                                2>/dev/null || echo 'Unknown'
+                            """,
+                            returnStdout: true
+                        ).trim()
 
-                    // Final status check
-                    def finalStatus = sh(
-                        script: """
-                            kubectl get pod kaniko-${BUILD_NUMBER} \
-                            -n ${K8S_NAMESPACE} \
-                            -o jsonpath='{.status.phase}'
-                        """,
-                        returnStdout: true
-                    ).trim()
+                        echo "Status [${i}]: ${finalStatus}"
 
-                    echo "Final Kaniko status: ${finalStatus}"
+                        if (finalStatus == 'Succeeded' ||
+                            finalStatus == 'Failed') {
+                            break
+                        }
+                        sleep(10)
+                    }
 
-                    // Cleanup
-                    sh """
-                        kubectl delete pod kaniko-${BUILD_NUMBER} \
-                        -n ${K8S_NAMESPACE} \
-                        --ignore-not-found=true || true
-
-                        kubectl delete secret \
-                        kaniko-dockerhub-${BUILD_NUMBER} \
-                        -n ${K8S_NAMESPACE} \
-                        --ignore-not-found=true || true
-
-                        rm -f kaniko-pod-${BUILD_NUMBER}.yaml
-                    """
-
+                    // Get logs if failed
                     if (finalStatus != 'Succeeded') {
-                        error "Kaniko build failed! Status: ${finalStatus}"
+                        sh """
+                            echo "=== Kaniko pod description ==="
+                            kubectl describe pod \
+                            kaniko-build-${BUILD_NUMBER} \
+                            -n ${K8S_NAMESPACE} || true
+
+                            echo "=== Kaniko pod logs ==="
+                            kubectl logs \
+                            kaniko-build-${BUILD_NUMBER} \
+                            -n ${K8S_NAMESPACE} || true
+                        """
+                    }
+
+                    // Cleanup pod and yaml
+                    sh """
+                        kubectl delete pod kaniko-build-${BUILD_NUMBER} \
+                        -n ${K8S_NAMESPACE} \
+                        --ignore-not-found=true || true
+
+                        rm -f kaniko-${BUILD_NUMBER}.yaml
+                    """
+
+                    // Fail pipeline if kaniko failed
+                    if (finalStatus != 'Succeeded') {
+                        error "❌ Kaniko build failed! Status: ${finalStatus}"
                     }
 
                     echo "✅ Image pushed: ${IMAGE_NAME}:${IMAGE_TAG}"
@@ -298,7 +283,7 @@ spec:
                         HEAD:main
                     """
                 }
-                echo "✅ ArgoCD will sync!"
+                echo "✅ Helm updated - ArgoCD syncing!"
             }
         }
     }
@@ -306,28 +291,26 @@ spec:
     post {
         success {
             echo """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🎉 PIPELINE SUCCESS!
-App: ${APP_NAME}
-Image: ${IMAGE_NAME}:${IMAGE_TAG}
-DockerHub: https://hub.docker.com/r/${DOCKERHUB_USER}/${APP_NAME}
+App:     ${APP_NAME}
+Image:   ${IMAGE_NAME}:${IMAGE_TAG}
+Branch:  ${GIT_BRANCH}
+Author:  ${GIT_AUTHOR}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             """
         }
         failure {
-            echo "❌ PIPELINE FAILED"
-            // Cleanup on failure
             sh """
-                kubectl delete pod kaniko-${BUILD_NUMBER} \
+                kubectl delete pod kaniko-build-${BUILD_NUMBER} \
                 -n ${K8S_NAMESPACE} \
                 --ignore-not-found=true || true
-
-                kubectl delete secret \
-                kaniko-dockerhub-${BUILD_NUMBER} \
-                -n ${K8S_NAMESPACE} \
-                --ignore-not-found=true || true
-            """ 
+                rm -f kaniko-${BUILD_NUMBER}.yaml || true
+            """
+            echo "❌ PIPELINE FAILED - Check logs above"
         }
     }
 }
 EOF
 
-echo "✅ Updated Jenkinsfile!"
+echo "✅ Jenkinsfile created!"
