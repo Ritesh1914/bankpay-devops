@@ -145,7 +145,7 @@ passwordVariable: 'DOCKER_PASS'
 
         echo "Waiting for Kaniko to finish..."
 
-        kubectl wait --for=condition=Ready pod/kaniko-${BUILD_NUMBER} -n jenkins --timeout=120s || true
+        kubectl wait --for=condition=Succeeded pod/kaniko-${BUILD_NUMBER} -n jenkins --timeout=120s || true
 
         kubectl logs -f kaniko-${BUILD_NUMBER} -n jenkins
 
