@@ -1,7 +1,7 @@
 pipeline {
 agent any
 
-```
+
 environment {
     APP_NAME        = "bankpay-service"
     DOCKERHUB_USER  = "riteshsingh90"
@@ -193,6 +193,6 @@ post {
         echo "PIPELINE FAILED"
     }
 }
-```
+
 
 }
