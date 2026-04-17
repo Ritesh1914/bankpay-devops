@@ -121,7 +121,7 @@ passwordVariable: 'DOCKER_PASS'
                 "image": "gcr.io/kaniko-project/executor:latest",
                 "args": [
                   "--dockerfile=app/Dockerfile",
-                  "--context=git://github.com/Ritesh1914/bankpay-devops.git#main#app",
+                  "--context=https://github.com/Ritesh1914/bankpay-devops.git#main#app",
                   "--destination='"$DOCKER_USER"'/bankpay-service:'"${BUILD_NUMBER}"'",
                   "--destination='"$DOCKER_USER"'/bankpay-service:latest"
                 ],
