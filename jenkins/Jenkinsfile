@@ -1,211 +1,215 @@
 pipeline {
-    agent any
-    
 
+agent {
+kubernetes {
+yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+containers:
 
-    environment {
-        APP_NAME        = "bankpay-service"
-        DOCKERHUB_USER  = "riteshsingh90"
-        IMAGE_NAME      = "${DOCKERHUB_USER}/${APP_NAME}"
-        IMAGE_TAG       = "${BUILD_NUMBER}"
-        SONAR_URL       = "http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000"
-        HELM_CHART      = "helm/bankpay"
-        GIT_REPO        = "https://github.com/Ritesh1914/bankpay-devops.git"
+* name: kaniko
+  image: gcr.io/kaniko-project/executor:latest
+  command:
+
+  * cat
+    tty: true
+    '''
+    }
     }
 
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
-        timestamps()
+environment {
+APP_NAME        = "bankpay-service"
+DOCKERHUB_USER  = "riteshsingh90"
+IMAGE_NAME      = "${DOCKERHUB_USER}/${APP_NAME}"
+IMAGE_TAG       = "${BUILD_NUMBER}"
+SONAR_URL       = "http://sonarqube.bankpay.local:30001"
+HELM_CHART      = "helm/bankpay"
+GIT_REPO        = "https://github.com/Ritesh1914/bankpay-devops.git"
+}
+
+options {
+buildDiscarder(logRotator(numToKeepStr: '10'))
+timeout(time: 30, unit: 'MINUTES')
+timestamps()
+}
+
+stages {
+
+```
+stage('Checkout') {
+  steps {
+    checkout scm
+    script {
+      env.GIT_COMMIT_MSG = sh(
+        script: 'git log -1 --pretty=%B',
+        returnStdout: true
+      ).trim()
+      env.GIT_AUTHOR = sh(
+        script: 'git log -1 --pretty=%an',
+        returnStdout: true
+      ).trim()
     }
+    echo "Branch: ${GIT_BRANCH}"
+    echo "Author: ${GIT_AUTHOR}"
+    echo "Commit: ${GIT_COMMIT_MSG}"
+  }
+}
 
-    stages {
-
-        stage('Checkout') {
-            steps {
-                checkout scm
-                script {
-                    env.GIT_COMMIT_MSG = sh(
-                        script: 'git log -1 --pretty=%B',
-                        returnStdout: true
-                    ).trim()
-                    env.GIT_AUTHOR = sh(
-                        script: 'git log -1 --pretty=%an',
-                        returnStdout: true
-                    ).trim()
-                }
-                echo "✅ Branch: ${GIT_BRANCH}"
-                echo "✅ Author: ${GIT_AUTHOR}"
-                echo "✅ Commit: ${GIT_COMMIT_MSG}"
-            }
-        }
-
-        stage('Maven Build') {
-            steps {
-                dir('app') {
-                    sh 'mvn clean package -DskipTests -q'
-                    echo "✅ Build successful!"
-                }
-            }
-            post {
-                success {
-                    archiveArtifacts \
-                        artifacts: 'app/target/*.jar',
-                        fingerprint: true
-                }
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                dir('app') {
-                    sh 'mvn test'
-                    echo "✅ Tests passed!"
-                }
-            }
-            post {
-                always {
-                    junit 'app/target/surefire-reports/*.xml'
-                }
-            }
-        }
-
-        stage('SonarQube Analysis') {
-            steps {
-                dir('app') {
-                    withSonarQubeEnv('SonarQube-Server') {
-                        sh """
-                            mvn sonar:sonar \
-                            -Dsonar.projectKey=bankpay-service \
-                            -Dsonar.projectName="BankPay Service" \
-                            -Dsonar.host.url=${SONAR_URL}
-                        """
-                    }
-                }
-                echo "✅ SonarQube analysis done!"
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-                echo "✅ Quality Gate PASSED!"
-            }
-        }
-
-        stage('Docker Build') {
-            steps {
-                dir('app') {
-                    sh """
-                        docker build \
-                        -t ${IMAGE_NAME}:${IMAGE_TAG} \
-                        -t ${IMAGE_NAME}:latest .
-                    """
-                    echo "✅ Docker image built: ${IMAGE_NAME}:${IMAGE_TAG}"
-                }
-            }
-        }
-
-        stage('Push to DockerHub') {
-            steps {
-                // Login to DockerHub using Jenkins credentials
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-creds',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh """
-                        echo \$DOCKER_PASS | \
-                        docker login -u \$DOCKER_USER \
-                        --password-stdin
-
-                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                        docker push ${IMAGE_NAME}:latest
-
-                        docker logout
-                    """
-                }
-                echo "✅ Image pushed to DockerHub!"
-                echo "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
-            }
-        }
-
-        stage('Deploy to DEV') {
-            steps {
-                sh """
-                    helm upgrade --install bankpay-dev \
-                    ${HELM_CHART} \
-                    --namespace bankpay-dev \
-                    --values ${HELM_CHART}/values-dev.yaml \
-                    --set image.repository=${IMAGE_NAME} \
-                    --set image.tag=${IMAGE_TAG} \
-                    --set image.pullPolicy=Always \
-                    --wait --timeout 5m
-                """
-                echo "✅ Deployed to bankpay-dev namespace!"
-            }
-        }
-
-        stage('Smoke Test') {
-            steps {
-                sh """
-                    sleep 15
-                    kubectl run smoke-test-${BUILD_NUMBER} \
-                    --image=curlimages/curl \
-                    --restart=Never \
-                    --rm -i \
-                    --namespace=bankpay-dev \
-                    -- curl -f \
-                    http://bankpay-dev-service:8080/api/payments/health
-                """
-                echo "✅ Smoke test passed!"
-            }
-        }
-
-        stage('Update Helm Chart (GitOps)') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'github-creds',
-                    usernameVariable: 'GIT_USER',
-                    passwordVariable: 'GIT_PASS'
-                )]) {
-                    sh """
-                        git config user.email "jenkins@bankpay.com"
-                        git config user.name "Jenkins CI"
-
-                        sed -i 's|repository:.*|repository: ${IMAGE_NAME}|' \
-                        ${HELM_CHART}/values.yaml
-
-                        sed -i 's|tag:.*|tag: "${IMAGE_TAG}"|' \
-                        ${HELM_CHART}/values.yaml
-
-                        git add ${HELM_CHART}/values.yaml
-                        git commit -m \
-                        "ci: update image to ${IMAGE_NAME}:${IMAGE_TAG} [skip ci]"
-
-                        git push \
-                        https://\${GIT_USER}:\${GIT_PASS}@github.com/Ritesh1914/bankpay-devops.git \
-                        main
-                    """
-                }
-                echo "✅ Helm chart updated - ArgoCD will sync to cluster!"
-            }
-        }
+stage('Maven Build') {
+  steps {
+    dir('app') {
+      sh 'mvn clean package -DskipTests -q'
     }
-
-    post {
-        success {
-            echo """
-            🎉 PIPELINE SUCCESS!
-            App: ${APP_NAME}
-            Image: ${IMAGE_NAME}:${IMAGE_TAG}
-            DockerHub: https://hub.docker.com/r/${DOCKERHUB_USER}/${APP_NAME}
-            """
-        }
-        failure {
-            echo "❌ PIPELINE FAILED - Check logs above"
-        }
+  }
+  post {
+    success {
+      archiveArtifacts artifacts: 'app/target/*.jar', fingerprint: true
     }
+  }
+}
+
+stage('Unit Tests') {
+  steps {
+    dir('app') {
+      sh 'mvn test'
+    }
+  }
+  post {
+    always {
+      junit 'app/target/surefire-reports/*.xml'
+    }
+  }
+}
+
+stage('SonarQube Analysis') {
+  steps {
+    dir('app') {
+      withSonarQubeEnv('SonarQube-Server') {
+        sh """
+          mvn sonar:sonar \
+          -Dsonar.projectKey=bankpay-service \
+          -Dsonar.projectName="BankPay Service" \
+          -Dsonar.host.url=${SONAR_URL}
+        """
+      }
+    }
+  }
+}
+
+stage('Quality Gate') {
+  steps {
+    timeout(time: 5, unit: 'MINUTES') {
+      waitForQualityGate abortPipeline: true
+    }
+  }
+}
+
+// ✅ KANIKO BUILD + PUSH (REPLACES DOCKER STAGES)
+stage('Build & Push Image (Kaniko)') {
+  steps {
+    container('kaniko') {
+      withCredentials([usernamePassword(
+        credentialsId: 'dockerhub-creds',
+        usernameVariable: 'DOCKER_USER',
+        passwordVariable: 'DOCKER_PASS'
+      )]) {
+
+        sh '''
+        mkdir -p /kaniko/.docker
+
+        cat > /kaniko/.docker/config.json <<EOF
+```
+
+{
+"auths": {
+"https://index.docker.io/v1/": {
+"username": "$DOCKER_USER",
+"password": "$DOCKER_PASS"
+}
+}
+}
+EOF
+
+```
+        /kaniko/executor \
+          --dockerfile=app/Dockerfile \
+          --context=$(pwd)/app \
+          --destination=$DOCKER_USER/bankpay-service:${BUILD_NUMBER} \
+          --destination=$DOCKER_USER/bankpay-service:latest \
+          --insecure \
+          --skip-tls-verify
+        '''
+      }
+    }
+  }
+}
+
+stage('Deploy to DEV') {
+  steps {
+    sh """
+      helm upgrade --install bankpay-dev \
+      ${HELM_CHART} \
+      --namespace bankpay-dev \
+      --values ${HELM_CHART}/values-dev.yaml \
+      --set image.repository=${IMAGE_NAME} \
+      --set image.tag=${IMAGE_TAG} \
+      --set image.pullPolicy=Always \
+      --wait --timeout 5m
+    """
+  }
+}
+
+stage('Smoke Test') {
+  steps {
+    sh """
+      sleep 15
+      kubectl run smoke-test-${BUILD_NUMBER} \
+      --image=curlimages/curl \
+      --restart=Never \
+      --rm -i \
+      --namespace=bankpay-dev \
+      -- curl -f \
+      http://bankpay-dev-service:8080/api/payments/health
+    """
+  }
+}
+
+stage('Update Helm Chart (GitOps)') {
+  steps {
+    withCredentials([usernamePassword(
+      credentialsId: 'github-creds',
+      usernameVariable: 'GIT_USER',
+      passwordVariable: 'GIT_PASS'
+    )]) {
+      sh """
+        git config user.email "jenkins@bankpay.com"
+        git config user.name "Jenkins CI"
+
+        sed -i 's|repository:.*|repository: ${IMAGE_NAME}|' \
+        ${HELM_CHART}/values.yaml
+
+        sed -i 's|tag:.*|tag: "${IMAGE_TAG}"|' \
+        ${HELM_CHART}/values.yaml
+
+        git add ${HELM_CHART}/values.yaml
+        git commit -m "ci: update image to ${IMAGE_NAME}:${IMAGE_TAG} [skip ci]"
+
+        git push https://\${GIT_USER}:\${GIT_PASS}@github.com/Ritesh1914/bankpay-devops.git main
+      """
+    }
+  }
+}
+```
+
+}
+
+post {
+success {
+echo "PIPELINE SUCCESS: ${IMAGE_NAME}:${IMAGE_TAG}"
+}
+failure {
+echo "PIPELINE FAILED"
+}
+}
 }
