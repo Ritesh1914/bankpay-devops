@@ -122,7 +122,7 @@ passwordVariable: 'DOCKER_PASS'
                 "args": [
                       "--dockerfile=Dockerfile",
                       "--context=https://github.com/Ritesh1914/bankpay-devops/archive/refs/heads/main.tar.gz",
-                      "--context-sub-path=app",
+                      "--context-sub-path=bankpay-devops-main/app",
                       "--destination='"$DOCKER_USER"'/bankpay-service:'"${BUILD_NUMBER}"'",
                       "--destination='"$DOCKER_USER"'/bankpay-service:latest"
 ],
