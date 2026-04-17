@@ -121,7 +121,7 @@ stage('Build & Push Image (Kaniko)') {
 }
 EOF
 
-```
+
         /kaniko/executor \
           --dockerfile=app/Dockerfile \
           --context=$(pwd)/app \
@@ -185,7 +185,7 @@ stage('Update Helm Chart (GitOps)') {
     }
   }
 }
-```
+
 
 }
 
