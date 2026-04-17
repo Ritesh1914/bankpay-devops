@@ -120,7 +120,7 @@ passwordVariable: 'DOCKER_PASS'
                 "name": "kaniko",
                 "image": "gcr.io/kaniko-project/executor:latest",
                 "args": [
-                  "--dockerfile=app/Dockerfile",
+                  "--dockerfile=Dockerfile",
                   "--context=/workspace/app",
                   "--destination='"$DOCKER_USER"'/bankpay-service:'"${BUILD_NUMBER}"'",
                   "--destination='"$DOCKER_USER"'/bankpay-service:latest"
@@ -147,7 +147,7 @@ passwordVariable: 'DOCKER_PASS'
                 {
                   "name": "workspace",
                   "hostPath": {
-                    "path": "/var/jenkins_home/workspace/${JOB_NAME}"
+                    "path": "/var/jenkins_home/workspace/bankpay-pipeline"
                 }
              }
             ]
