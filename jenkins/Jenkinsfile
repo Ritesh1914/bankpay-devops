@@ -1,16 +1,14 @@
 pipeline {
     agent any
-    
-
 
     environment {
-        APP_NAME        = "bankpay-service"
-        DOCKERHUB_USER  = "riteshsingh90"
-        IMAGE_NAME      = "${DOCKERHUB_USER}/${APP_NAME}"
-        IMAGE_TAG       = "${BUILD_NUMBER}"
-        SONAR_URL       = "http://sonarqube.bankpay.local:30001"
-        HELM_CHART      = "helm/bankpay"
-        GIT_REPO        = "https://github.com/Ritesh1914/bankpay-devops.git"
+        APP_NAME       = "bankpay-service"
+        DOCKERHUB_USER = "riteshsingh90"
+        IMAGE_NAME     = "${DOCKERHUB_USER}/${APP_NAME}"
+        IMAGE_TAG      = "${BUILD_NUMBER}"
+        SONAR_URL      = "http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000"
+        HELM_CHART     = "helm/bankpay"
+        K8S_NAMESPACE  = "jenkins"
     }
 
     options {
@@ -21,26 +19,26 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
+        stage('🔍 Checkout') {
             steps {
                 checkout scm
                 script {
-                    env.GIT_COMMIT_MSG = sh(
-                        script: 'git log -1 --pretty=%B',
-                        returnStdout: true
-                    ).trim()
                     env.GIT_AUTHOR = sh(
                         script: 'git log -1 --pretty=%an',
                         returnStdout: true
                     ).trim()
+                    env.GIT_COMMIT_MSG = sh(
+                        script: 'git log -1 --pretty=%B',
+                        returnStdout: true
+                    ).trim()
                 }
-                echo "✅ Branch: ${GIT_BRANCH}"
-                echo "✅ Author: ${GIT_AUTHOR}"
-                echo "✅ Commit: ${GIT_COMMIT_MSG}"
+                echo "📦 Branch: ${GIT_BRANCH}"
+                echo "👤 Author: ${GIT_AUTHOR}"
+                echo "💬 Commit: ${GIT_COMMIT_MSG}"
             }
         }
 
-        stage('Maven Build') {
+        stage('🔨 Maven Build') {
             steps {
                 dir('app') {
                     sh 'mvn clean package -DskipTests -q'
@@ -56,21 +54,26 @@ pipeline {
             }
         }
 
-        stage('Unit Tests') {
+        stage('🧪 Unit Tests') {
             steps {
                 dir('app') {
                     sh 'mvn test'
-                    echo "✅ Tests passed!"
                 }
             }
             post {
                 always {
                     junit 'app/target/surefire-reports/*.xml'
+                    jacoco(
+                        execPattern: 'app/target/jacoco.exec',
+                        classPattern: 'app/target/classes',
+                        sourcePattern: 'app/src/main/java',
+                        minimumInstructionCoverage: '70'
+                    )
                 }
             }
         }
 
-        stage('SonarQube Analysis') {
+        stage('🔐 SonarQube Analysis') {
             steps {
                 dir('app') {
                     withSonarQubeEnv('SonarQube-Server') {
@@ -86,7 +89,7 @@ pipeline {
             }
         }
 
-        stage('Quality Gate') {
+        stage('🚦 Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
@@ -95,84 +98,147 @@ pipeline {
             }
         }
 
-        stage('Build & Push Image (Kaniko)') {
-steps {
-withCredentials([usernamePassword(
-credentialsId: 'dockerhub-creds',
-usernameVariable: 'DOCKER_USER',
-passwordVariable: 'DOCKER_PASS'
-)]) {
+        stage('🐳 Build & Push (Kaniko)') {
+            steps {
+                script {
+                    // Cleanup any previous failed kaniko pod
+                    sh """
+                        kubectl delete pod kaniko-${BUILD_NUMBER} \
+                        -n ${K8S_NAMESPACE} \
+                        --ignore-not-found=true 2>/dev/null || true
+                    """
 
+                    // Create Docker config secret inline
+                    withCredentials([usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        // Create auth string
+                        sh """
+                            AUTH=\$(echo -n "\${DOCKER_USER}:\${DOCKER_PASS}" | base64 -w 0)
 
-        sh '''
-        echo "Creating Docker auth..."
+                            kubectl create secret generic \
+                            kaniko-dockerhub-${BUILD_NUMBER} \
+                            --from-literal=config.json='{
+                              "auths": {
+                                "https://index.docker.io/v1/": {
+                                  "auth": "'\${AUTH}'"
+                                }
+                              }
+                            }' \
+                            -n ${K8S_NAMESPACE} \
+                            --dry-run=client -o yaml | \
+                            kubectl apply -f -
+                        """
+                    }
 
-        echo "Starting Kaniko build..."
+                    // Create Kaniko pod with fix flags
+                    def kanikoPod = """
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kaniko-${BUILD_NUMBER}
+  namespace: ${K8S_NAMESPACE}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:v1.21.0
+      args:
+        - "--dockerfile=Dockerfile"
+        - "--context=https://github.com/Ritesh1914/bankpay-devops/archive/refs/heads/main.tar.gz"
+        - "--context-sub-path=bankpay-devops-main/app"
+        - "--destination=${IMAGE_NAME}:${IMAGE_TAG}"
+        - "--destination=${IMAGE_NAME}:latest"
+        - "--snapshotMode=redo"
+        - "--ignore-var-run=true"
+        - "--compressed-caching=false"
+        - "--cache=false"
+      volumeMounts:
+        - name: docker-config
+          mountPath: /kaniko/.docker
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: kaniko-dockerhub-${BUILD_NUMBER}
+"""
+                    writeFile file: "kaniko-pod-${BUILD_NUMBER}.yaml",
+                              text: kanikoPod
 
-        kubectl run kaniko-${BUILD_NUMBER} \
-          --image=gcr.io/kaniko-project/executor:latest \
-          --restart=Never \
-          --namespace=jenkins \
-          --overrides='{
-            "apiVersion": "v1",
-            "spec": {
-              "containers": [{
-                "name": "kaniko",
-                "image": "gcr.io/kaniko-project/executor:latest",
-                "args": [
-                      "--dockerfile=Dockerfile",
-                      "--context=https://github.com/Ritesh1914/bankpay-devops/archive/refs/heads/main.tar.gz",
-                      "--context-sub-path=bankpay-devops-main/app",
-                      "--destination='"$DOCKER_USER"'/bankpay-service:'"${BUILD_NUMBER}"'",
-                      "--destination='"$DOCKER_USER"'/bankpay-service:latest",
-                      "--cleanup=false"
-],
-                "volumeMounts": [
-  {
-    "name": "docker-config",
-    "mountPath": "/kaniko/.docker/config.json",
-    "subPath": ".dockerconfigjson"
-  }
-]
-              }],
-              "volumes": [
-                {
-                  "name": "docker-config",
-                  "secret": {
-                    "secretName": "dockerhub-secret"
-                 }
+                    sh "kubectl apply -f kaniko-pod-${BUILD_NUMBER}.yaml"
+
+                    echo "⏳ Waiting for Kaniko pod to be ready..."
+                    sh """
+                        sleep 5
+                        kubectl wait pod/kaniko-${BUILD_NUMBER} \
+                        --for=condition=Ready \
+                        --timeout=60s \
+                        -n ${K8S_NAMESPACE} 2>/dev/null || true
+                    """
+
+                    echo "📋 Streaming Kaniko logs..."
+                    sh """
+                        kubectl logs -f kaniko-${BUILD_NUMBER} \
+                        -n ${K8S_NAMESPACE} || true
+                    """
+
+                    // Wait for completion
+                    sh """
+                        for i in \$(seq 1 30); do
+                            STATUS=\$(kubectl get pod kaniko-${BUILD_NUMBER} \
+                            -n ${K8S_NAMESPACE} \
+                            -o jsonpath='{.status.phase}' 2>/dev/null)
+                            echo "Status: \$STATUS"
+                            if [ "\$STATUS" = "Succeeded" ]; then
+                                echo "✅ Kaniko build succeeded!"
+                                break
+                            elif [ "\$STATUS" = "Failed" ]; then
+                                echo "❌ Kaniko build failed!"
+                                kubectl logs kaniko-${BUILD_NUMBER} \
+                                -n ${K8S_NAMESPACE} || true
+                                exit 1
+                            fi
+                            sleep 10
+                        done
+                    """
+
+                    // Final status check
+                    def finalStatus = sh(
+                        script: """
+                            kubectl get pod kaniko-${BUILD_NUMBER} \
+                            -n ${K8S_NAMESPACE} \
+                            -o jsonpath='{.status.phase}'
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Final Kaniko status: ${finalStatus}"
+
+                    // Cleanup
+                    sh """
+                        kubectl delete pod kaniko-${BUILD_NUMBER} \
+                        -n ${K8S_NAMESPACE} \
+                        --ignore-not-found=true || true
+
+                        kubectl delete secret \
+                        kaniko-dockerhub-${BUILD_NUMBER} \
+                        -n ${K8S_NAMESPACE} \
+                        --ignore-not-found=true || true
+
+                        rm -f kaniko-pod-${BUILD_NUMBER}.yaml
+                    """
+
+                    if (finalStatus != 'Succeeded') {
+                        error "Kaniko build failed! Status: ${finalStatus}"
+                    }
+
+                    echo "✅ Image pushed: ${IMAGE_NAME}:${IMAGE_TAG}"
                 }
-                
-            
-            ]
             }
-          }'
+        }
 
-        echo "Waiting for Kaniko to finish..."
-
-        kubectl wait --for=condition=Succeeded pod/kaniko-${BUILD_NUMBER} -n jenkins --timeout=120s || true
-
-        kubectl logs -f kaniko-${BUILD_NUMBER} -n jenkins
-
-        STATUS=$(kubectl get pod kaniko-${BUILD_NUMBER} -n jenkins -o jsonpath='{.status.phase}')
-
-        echo "Kaniko status: $STATUS"
-
-        if [ "$STATUS" != "Succeeded" ]; then
-          echo "Kaniko build failed"
-          exit 1
-        fi
-
-        kubectl delete pod kaniko-${BUILD_NUMBER} -n jenkins
-        '''
-    }
-}
-
-
-}
-
-
-        stage('Deploy to DEV') {
+        stage('🚀 Deploy to DEV') {
             steps {
                 sh """
                     helm upgrade --install bankpay-dev \
@@ -184,18 +250,17 @@ passwordVariable: 'DOCKER_PASS'
                     --set image.pullPolicy=Always \
                     --wait --timeout 5m
                 """
-                echo "✅ Deployed to bankpay-dev namespace!"
+                echo "✅ Deployed to DEV!"
             }
         }
 
-        stage('Smoke Test') {
+        stage('🔍 Smoke Test') {
             steps {
                 sh """
                     sleep 15
                     kubectl run smoke-test-${BUILD_NUMBER} \
                     --image=curlimages/curl \
-                    --restart=Never \
-                    --rm -i \
+                    --restart=Never --rm -i \
                     --namespace=bankpay-dev \
                     -- curl -f \
                     http://bankpay-dev-service:8080/api/payments/health
@@ -204,7 +269,7 @@ passwordVariable: 'DOCKER_PASS'
             }
         }
 
-        stage('Update Helm Chart (GitOps)') {
+        stage('🔄 Update Helm Chart (GitOps)') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'github-creds',
@@ -215,22 +280,25 @@ passwordVariable: 'DOCKER_PASS'
                         git config user.email "jenkins@bankpay.com"
                         git config user.name "Jenkins CI"
 
-                        sed -i 's|repository:.*|repository: ${IMAGE_NAME}|' \
+                        sed -i \
+                        's|repository:.*|repository: ${IMAGE_NAME}|' \
                         ${HELM_CHART}/values.yaml
 
-                        sed -i 's|tag:.*|tag: "${IMAGE_TAG}"|' \
+                        sed -i \
+                        's|tag:.*|tag: "${IMAGE_TAG}"|' \
                         ${HELM_CHART}/values.yaml
 
                         git add ${HELM_CHART}/values.yaml
+                        git diff --cached --quiet || \
                         git commit -m \
-                        "ci: update image to ${IMAGE_NAME}:${IMAGE_TAG} [skip ci]"
+                        "ci: update image to ${IMAGE_TAG} [skip ci]"
 
                         git push \
                         https://\${GIT_USER}:\${GIT_PASS}@github.com/Ritesh1914/bankpay-devops.git \
-                        main
+                        HEAD:main
                     """
                 }
-                echo "✅ Helm chart updated - ArgoCD will sync to cluster!"
+                echo "✅ ArgoCD will sync!"
             }
         }
     }
@@ -238,14 +306,28 @@ passwordVariable: 'DOCKER_PASS'
     post {
         success {
             echo """
-            🎉 PIPELINE SUCCESS!
-            App: ${APP_NAME}
-            Image: ${IMAGE_NAME}:${IMAGE_TAG}
-            DockerHub: https://hub.docker.com/r/${DOCKERHUB_USER}/${APP_NAME}
+🎉 PIPELINE SUCCESS!
+App: ${APP_NAME}
+Image: ${IMAGE_NAME}:${IMAGE_TAG}
+DockerHub: https://hub.docker.com/r/${DOCKERHUB_USER}/${APP_NAME}
             """
         }
         failure {
-            echo "❌ PIPELINE FAILED - Check logs above"
+            echo "❌ PIPELINE FAILED"
+            // Cleanup on failure
+            sh """
+                kubectl delete pod kaniko-${BUILD_NUMBER} \
+                -n ${K8S_NAMESPACE} \
+                --ignore-not-found=true || true
+
+                kubectl delete secret \
+                kaniko-dockerhub-${BUILD_NUMBER} \
+                -n ${K8S_NAMESPACE} \
+                --ignore-not-found=true || true
+            """ 
         }
     }
 }
+EOF
+
+echo "✅ Updated Jenkinsfile!"
