@@ -136,8 +136,8 @@ passwordVariable: 'DOCKER_PASS'
               }],
               "volumes": [{
                 "name": "docker-config",
-                "hostPath": {
-                  "path": "dockerhub-secret"
+                "secret": {
+                  "secretName": "dockerhub-secret"
                 }
               }]
             }
