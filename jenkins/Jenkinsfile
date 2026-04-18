@@ -43,6 +43,8 @@ pipeline {
                 dir('app') {
                     sh 'mvn clean package -DskipTests -q'
                     echo "✅ Build successful!"
+                    // Verify JAR exists
+                    sh 'ls -la target/*.jar'
                 }
             }
             post {
@@ -101,7 +103,7 @@ pipeline {
         stage('🐳 Build & Push (Kaniko)') {
             steps {
                 script {
-                    // Cleanup any previous kaniko pod
+                    // Cleanup previous pod
                     sh """
                         kubectl delete pod kaniko-build-${BUILD_NUMBER} \
                         -n ${K8S_NAMESPACE} \
@@ -109,9 +111,26 @@ pipeline {
                         sleep 2
                     """
 
-                    // Write Kaniko pod manifest
-                    // Uses your existing dockerhub-secret
-                    // with .dockerconfigjson key
+                    // Create a ConfigMap with single-stage Dockerfile
+                    // This avoids multi-stage build issue with KIND
+                    sh """
+                        kubectl create configmap \
+                        kaniko-dockerfile-${BUILD_NUMBER} \
+                        --from-literal=Dockerfile='FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+COPY app.jar app.jar
+USER appuser
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -q --spider http://localhost:8080/api/payments/health || exit 1
+ENTRYPOINT ["java", "-jar", "app.jar"]' \
+                        -n ${K8S_NAMESPACE} \
+                        --dry-run=client -o yaml | \
+                        kubectl apply -f -
+                    """
+
+                    // Upload JAR to a PVC or use git context
+                    // We use a trick: copy JAR via initContainer
                     writeFile file: "kaniko-${BUILD_NUMBER}.yaml",
                     text: """
 apiVersion: v1
@@ -121,25 +140,46 @@ metadata:
   namespace: ${K8S_NAMESPACE}
 spec:
   restartPolicy: Never
+  initContainers:
+    - name: copy-jar
+      image: eclipse-temurin:17-jre-alpine
+      command:
+        - sh
+        - -c
+        - |
+          cp /jar/bankpay-service-1.0.0.jar /workspace/app.jar
+          echo "JAR copied successfully"
+          ls -la /workspace/
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: jar-volume
+          mountPath: /jar
   containers:
     - name: kaniko
-      image: gcr.io/kaniko-project/executor:v1.21.0
+      image: gcr.io/kaniko-project/executor:v1.9.0
       args:
-        - "--dockerfile=Dockerfile"
-        - "--context=https://github.com/Ritesh1914/bankpay-devops/archive/refs/heads/main.tar.gz"
-        - "--context-sub-path=bankpay-devops-main/app"
+        - "--dockerfile=/workspace/Dockerfile"
+        - "--context=dir:///workspace"
         - "--destination=${IMAGE_NAME}:${IMAGE_TAG}"
         - "--destination=${IMAGE_NAME}:latest"
-        - "--snapshotMode=redo"
-        - "--ignore-var-run=true"
-        - "--cache=false"
-        - "--compressed-caching=false"
         - "--log-format=text"
         - "--verbosity=info"
       volumeMounts:
         - name: docker-config
           mountPath: /kaniko/.docker
+        - name: workspace
+          mountPath: /workspace
+        - name: dockerfile-config
+          mountPath: /workspace/Dockerfile
+          subPath: Dockerfile
   volumes:
+    - name: workspace
+      emptyDir: {}
+    - name: jar-volume
+      hostPath:
+        path: /var/jenkins_home/workspace/bankpay-pipeline/app/target
+        type: Directory
     - name: docker-config
       projected:
         sources:
@@ -148,24 +188,23 @@ spec:
               items:
                 - key: .dockerconfigjson
                   path: config.json
+    - name: dockerfile-config
+      configMap:
+        name: kaniko-dockerfile-${BUILD_NUMBER}
 """
 
-                    // Apply the pod
                     sh "kubectl apply -f kaniko-${BUILD_NUMBER}.yaml"
                     echo "🚀 Kaniko pod started!"
+                    sh "sleep 15"
 
-                    // Wait for pod to initialize
-                    sh "sleep 10"
-
-                    // Stream logs in real time
-                    echo "📋 Kaniko build logs:"
+                    // Stream logs
+                    echo "📋 Kaniko logs:"
                     sh """
                         kubectl logs -f kaniko-build-${BUILD_NUMBER} \
                         -n ${K8S_NAMESPACE} || true
                     """
 
-                    // Poll for final status
-                    echo "⏳ Checking final status..."
+                    // Poll status
                     def finalStatus = ""
                     for (int i = 0; i < 30; i++) {
                         finalStatus = sh(
@@ -188,31 +227,33 @@ spec:
                         sleep(10)
                     }
 
-                    // Get logs if failed
+                    // Show logs on failure
                     if (finalStatus != 'Succeeded') {
                         sh """
-                            echo "=== Kaniko pod description ==="
                             kubectl describe pod \
                             kaniko-build-${BUILD_NUMBER} \
                             -n ${K8S_NAMESPACE} || true
-
-                            echo "=== Kaniko pod logs ==="
                             kubectl logs \
                             kaniko-build-${BUILD_NUMBER} \
                             -n ${K8S_NAMESPACE} || true
                         """
                     }
 
-                    // Cleanup pod and yaml
+                    // Cleanup
                     sh """
-                        kubectl delete pod kaniko-build-${BUILD_NUMBER} \
+                        kubectl delete pod \
+                        kaniko-build-${BUILD_NUMBER} \
+                        -n ${K8S_NAMESPACE} \
+                        --ignore-not-found=true || true
+
+                        kubectl delete configmap \
+                        kaniko-dockerfile-${BUILD_NUMBER} \
                         -n ${K8S_NAMESPACE} \
                         --ignore-not-found=true || true
 
                         rm -f kaniko-${BUILD_NUMBER}.yaml
                     """
 
-                    // Fail pipeline if kaniko failed
                     if (finalStatus != 'Succeeded') {
                         error "❌ Kaniko build failed! Status: ${finalStatus}"
                     }
@@ -304,12 +345,18 @@ Author:  ${GIT_AUTHOR}
                 kubectl delete pod kaniko-build-${BUILD_NUMBER} \
                 -n ${K8S_NAMESPACE} \
                 --ignore-not-found=true || true
+
+                kubectl delete configmap \
+                kaniko-dockerfile-${BUILD_NUMBER} \
+                -n ${K8S_NAMESPACE} \
+                --ignore-not-found=true || true
+
                 rm -f kaniko-${BUILD_NUMBER}.yaml || true
             """
-            echo "❌ PIPELINE FAILED - Check logs above"
+            echo "❌ PIPELINE FAILED"
         }
     }
 }
 EOF
 
-echo "✅ Jenkinsfile created!"
+echo "✅ Updated Jenkinsfile!"
