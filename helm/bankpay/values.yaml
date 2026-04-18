@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: riteshsingh90/bankpay-service
-  tag: "latest"
+  tag: "54"
   pullPolicy: Never
 
 service:
