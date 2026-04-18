@@ -385,6 +385,6 @@ Image: ${IMAGE_NAME}:${IMAGE_TAG}
         }
     }
 }
-EOF
+
 
 echo "✅ Jenkinsfile updated!"
