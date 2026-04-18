@@ -307,7 +307,7 @@ spec:
                     --set image.repository=${IMAGE_NAME} \
                     --set image.tag=${IMAGE_TAG} \
                     --set image.pullPolicy=Always \
-                    --wait --timeout 5m
+                    --wait --timeout 10m
                 """
                 echo "✅ Deployed to DEV!"
             }

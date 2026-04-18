@@ -1,17 +1,35 @@
 replicaCount: 1
 
 image:
-  repository: bankpay-service
+  repository: riteshsingh90/bankpay-service
   tag: "latest"
-  pullPolicy: Never
+  pullPolicy: Always
+
+service:
+  type: NodePort
+  port: 8080
+  nodePort: 30003
 
 env:
   APP_ENV: development
 
 resources:
   requests:
-    cpu: "100m"
-    memory: "128Mi"
+    cpu: "200m"
+    memory: "384Mi"
   limits:
-    cpu: "300m"
-    memory: "256Mi"
+    cpu: "500m"
+    memory: "512Mi"
+
+# Increased delays for slow JVM startup
+livenessProbe:
+  path: /actuator/health
+  initialDelaySeconds: 120  # wait 2 mins before first check
+  periodSeconds: 30
+  failureThreshold: 5
+
+readinessProbe:
+  path: /actuator/health
+  initialDelaySeconds: 90   # wait 90s before readiness check
+  periodSeconds: 10
+  failureThreshold: 10

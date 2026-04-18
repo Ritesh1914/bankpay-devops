@@ -23,10 +23,12 @@ env:
 
 livenessProbe:
   path: /actuator/health
-  initialDelaySeconds: 30
-  periodSeconds: 10
+  initialDelaySeconds: 120
+  periodSeconds: 30
+  failureThreshold: 5
 
 readinessProbe:
   path: /actuator/health
-  initialDelaySeconds: 20
-  periodSeconds: 5
+  initialDelaySeconds: 90
+  periodSeconds: 10
+  failureThreshold: 10
